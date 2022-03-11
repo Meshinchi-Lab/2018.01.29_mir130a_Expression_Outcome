@@ -1,0 +1,308 @@
+---
+title: ''
+author: "Jenny Smith"
+date: "February 2, 2018"
+output: html_document
+---
+
+
+```{r setup}
+library(knitr)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, fig.align='center')
+knitr::opts_knit$set(root.dir = '/fh/fast/meshinchi_s/workingDir/TARGET/AML_TARGET/RNA/miRNAseq/analysis/2018.01.29_mir130a_Expression_Outcome/')
+```
+
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+library(ggplot2)
+library(dplyr)
+library(tibble)
+library(tidyr)
+getwd()
+```
+
+
+#Read in the Clinical Data
+
+```{r}
+CDE.1031 <- read.csv("~/reference_mapping-files/older_versions/TARGET_AML_1031_CDE_cleaned_1.31.2018.csv", stringsAsFactors = FALSE, row.names = 1)
+
+head(CDE.1031[,1:5])
+```
+
+
+#Read in the miRNA Expression Matrix
+
+```{r}
+RPM <- read.csv("/fh/fast/meshinchi_s/workingDir/TARGET/AML_TARGET/RNA/miRNAseq/level3/matureMiRNA/2017July_BCCA_1031_miRBase20_Illumina_data/TARGET_AML_AAML1031_expn_matrix_mimat_miRNA_RPM.csv",
+                stringsAsFactors = FALSE, row.names = 1)
+
+head(RPM[,1:5])
+# dim(RPM) #2576 by 1,138
+```
+
+```{r}
+t <- str_split_fixed(colnames(RPM), "\\.", n=3)
+
+table(t[,2]) #all are diagnostic samples 
+```
+
+```{r}
+colnames(RPM) <- t[,1] #set colnames  and remove the Kasumis/MV411
+RPM <- RPM[,grep("BCCA", colnames(RPM), invert = TRUE)]
+```
+
+
+#read in the miRNA annotations
+
+```{r}
+mirAnno <- read.csv("/fh/fast/meshinchi_s/workingDir/TARGET/Reference_Data/miRBase_v21/hsa_gff3_IDMap.csv", 
+                    stringsAsFactors = FALSE)
+head(mirAnno)
+```
+
+
+
+#waterfall plot with mir130
+
+```{r}
+mir130 <- RPM %>%
+  rownames_to_column("mir") %>%
+  filter(grepl("mir.130a", mir)) %>%
+  gather(USI,value, -mir) %>%
+  mutate(log2.RPM=log2(value+1),
+         group=ifelse(grepl("^BM|^RO", USI), "NBM", "AML")) %>%
+  left_join(., select(CDE.1031, USI,t.8.21_Cleaned,inv.16_Cleaned,MLL_Cleaned,Abnormal.Karyotype, osi,yrsos,efsi,yrsefs), by="USI") %>%
+  
+  mutate(CBF.Group=ifelse(t.8.21_Cleaned == "Positive", "t.8.21", ifelse(inv.16_Cleaned == "Positive", "inv.16", ifelse(MLL_Cleaned == "Positive", "MLL", ifelse(Abnormal.Karyotype == "Normal", "NK", group))))) %>%
+  mutate(CBF.Group=ifelse(is.na(CBF.Group), group, CBF.Group)) %>%
+  mutate(CBF.Group=factor(CBF.Group, levels=c("NBM", "AML", "NK", "inv.16","t.8.21", "MLL")))
+
+head(mir130)
+# dim(mir130)
+```
+
+In the future, will create my ordering function. Need to reorder USI so that the factor levels order BM and AML seperately, and BM and AML ordered by increasing RPM. 
+
+
+```{r}
+write.csv(mir130,"TARGET_AML_1031_miR130a_CytoGroups_Original.csv", row.names = FALSE)
+```
+
+```{r}
+table(mir130$mir)
+```
+
+```{r}
+library(ggpubr)
+source("~/scripts/RNAseq_Analysis/DifferentialExpn_PathwayAnalysis/ggplot_Themes_Function.r")
+```
+
+
+```{r}
+mimat <- c("MIMAT0000425", "MIMAT0004593")
+waterfalls <- list()
+
+for (i in 1:2){
+  p <- ggbarplot(subset(mir130, grepl(mimat[i], mir130$mir)), x="USI", y="value", 
+          fill = "group", 
+          color = "group", 
+          palette = c("firebrick", "black"),
+          sort.by.groups = TRUE,
+          sort.val = "asc",
+          xlab="Patient", 
+          ylab="RPM",
+          title = paste("miR-130",mimat[i], "Expression in AAML1031"))
+  
+  waterfalls[[i]] <- p
+}
+
+```
+
+
+```{r}
+# tiff("mir130a_MIMAT0000425_waterfallplot.tiff", height = 5, width = 8, units="in", res = 600)
+waterfalls[[1]] + theme_JS + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), panel.border = element_blank())
+# dev.off()
+
+# tiff("mir130a_MIMAT0004593_waterfallplot.tiff", height = 5, width = 8, units="in", res = 600)
+waterfalls[[2]] + theme_JS + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), panel.border = element_blank()) + ylim(0,1500)
+# dev.off()
+```
+
+
+```{r}
+hist <- ggplot(mir130, aes(x=log2.RPM, fill=group)) +
+  geom_histogram(binwidth = 0.5) +
+  scale_fill_manual(values=c("NBM"="black", "AML"="firebrick")) +
+  facet_wrap(facets = "mir", ncol=2)
+  # scale_x_continuous(breaks = seq(0,10,by=1)) + 
+  # geom_vline(xintercept = c(0.25, 5), color="grey30") +
+  # theme_numX 
+
+# tiff("")
+hist
+```
+
+
+
+```{r}
+bplot <- ggplot(mir130, aes(x=CBF.Group, y=log2.RPM, fill=CBF.Group)) +
+  geom_boxplot() 
+
+bplot <- bplot + 
+  facet_wrap(facets = "mir", ncol=2, strip.position = "bottom") +
+  theme(strip.background = element_rect(color = "deepskyblue1", fill = "deepskyblue1", size = 0.5), 
+        strip.text = element_text(size=18)) + 
+  theme_JS +
+  theme(axis.title.x = element_blank(), legend.text = element_text(size=18), legend.title = element_blank())
+
+
+# tiff("mir130a_Cytogenetic_Groups_boxplot.tiff", height = 8, width = 12, res=600, units="in")
+bplot
+# dev.off()
+```
+
+```{r}
+groups <- subset(mir130,grepl("MIMAT0004593", mir))
+
+table(groups$Abnormal.Karyotype)
+
+table(groups$CBF.Group)
+# write.csv(as.data.frame(table(groups$CBF.Group)), "Boxplot_Figure_legend.csv", row.names = FALSE)
+```
+
+```{r}
+
+```
+
+
+#Heatmap with Mir130a 
+
+```{r}
+
+```
+
+
+
+#Survival analysis with mir130a
+
+```{r}
+source("~/scripts/survival_analysis/Survplot_Functions_2017.03.31.r")
+```
+
+
+```{r}
+expn_groups <- function(numericVector,USI,type="median"){
+  
+  if (type == "median"){
+    m <- median(numericVector)
+    g <- ifelse(numericVector >= m, "high", "low")
+  }else if (type=="quantile"){
+    q <- quantile(numericVector)
+    
+    if (q[1] == q[2]){
+      #add USIs to the ordered numeric vector
+      numline <- numericVector %>% set_names(USI) %>% .[order(.)] #ordered from lowest to highest value
+      qts <- quantile(1:length(numline))
+      q1 <- numline[1:qts[2]-1] #identify USIs in q1
+      
+      #update the groups so that q1s are included
+      g <- ifelse(numericVector < q[2], "q1", ifelse(numericVector >= q[2] & numericVector < q[3], "q2", ifelse(numericVector >= q[3] & numericVector < q[4], "q3", "q4"))) %>%
+        set_names(USI)
+      g <- ifelse(names(g) %in% names(q1), "q1", g)
+    }else{
+     g <- ifelse(numericVector < q[2], "q1", ifelse(numericVector >= q[2] & numericVector < q[3], "q2", ifelse(numericVector >= q[3] & numericVector < q[4], "q3", "q4"))) 
+    }
+  }
+  
+  return(g)
+}
+```
+
+
+```{r}
+mir130.withOS <- mir130 %>%
+  filter(!is.na(osi)) %>%
+  # inner_join(., select(CDE.1031.withOS, USI,osi,yrsos,efsi,yrsefs), by="USI") %>%
+  mutate(value=log2(value+1)) %>%
+  group_by(mir) %>%
+  mutate(High.Low.Median=expn_groups(value,USI),
+         High.Low.Quartile=expn_groups(value,USI, type="quantile"))
+
+
+head(mir130.withOS)
+```
+
+
+#Continous Variable
+
+```{r}
+library(survival)
+```
+
+```{r}
+df <- mir130.withOS %>%
+  # group_by(mir) %>%
+  filter(grepl("MIMAT0000425", mir)) 
+
+KM <- survival::Surv(time = df$yrsos, event =df$osi)
+coxMod <- coxph(KM ~ df$value)
+coxPHtest <- cox.zph(coxMod, transform = "km")
+
+summary(coxMod)
+coxPHtest
+```
+
+
+There is not a relationship with outcome. 
+
+
+#Discretized Expression Groups
+
+```{r message=FALSE}
+KM.med <- KM.plots(mir130.withOS, 
+                   groupBy = "mir", 
+                   type="OS",
+                   covariate = "High.Low.Median",
+                   cohort = "1031", 
+                   cc = c("low"="blue", "high"="red"))
+KM.med
+# saveMultiPlots(KM.med, w=11)
+```
+
+
+```{r fig.width=11}
+KM.med$OS
+KM.med$EFS
+```
+
+
+```{r}
+KM.qt <- KM.plots(mir130.withOS, 
+                  groupBy = "mir", 
+                  type="OS",
+                  covariate = "High.Low.Quartile", 
+                  cohort = "1031", 
+                  cc=c("q1"="blue", "q2"="dodgerblue", "q3"="red1","q4"="red4" ))
+
+KM.qt
+
+# saveMultiPlots(KM.qt,w=11)
+```
+
+
+```{r fig.width=11}
+KM.qt$OS
+KM.qt$EFS
+```
+
+
+#Session Information 
+
+```{r}
+sessionInfo()
+```
+

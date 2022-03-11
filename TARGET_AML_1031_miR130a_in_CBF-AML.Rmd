@@ -1,0 +1,487 @@
+---
+title: 'miR-130a in Corebinding Factor AML'
+author: "Jenny Smith"
+date: "February 2, 2018"
+output: html_document
+---
+
+
+```{r setup}
+library(knitr)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, fig.align='center')
+knitr::opts_knit$set(root.dir = '/fh/fast/meshinchi_s/workingDir/TARGET/AML_TARGET/RNA/miRNAseq/analysis/2018.01.29_mir130a_Expression_Outcome/')
+options(stringsAsFactors = FALSE)
+```
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(tibble)
+library(tidyr)
+getwd()
+```
+
+
+#Read in the Clinical Data
+
+```{r}
+CDE.1031 <- read.csv("~/reference_mapping-files/AAML1031_Target_CDEs_with_HiAR_and_PrimaryCyto_withFusionCalls_10.11.2018.csv")
+
+CDE.1031 <- CDE.1031 %>%
+  filter(!is.na(USI)) %>%
+  set_rownames(.$USI)
+
+head(CDE.1031[,1:5])
+dim(CDE.1031)
+```
+
+```{r}
+merged <- read.csv("~/reference_mapping-files/TARGET_AML_0531_1031_merged_CDEs_10.29.18.csv")
+
+
+merged <- merged %>%
+  select(USI=TARGET.USI.1, everything()) %>%
+  filter(!is.na(USI)) %>%
+  set_rownames(.$USI)
+
+head(merged[,1:5])
+dim(merged) #2153  176
+```
+
+
+#Read in the miRNA Expression Matrix
+
+```{r}
+RPM <- read.csv("~/RNA_seq_Analysis/0000.00.03_Expression_Matrices/TARGET_AML_AAML1031_MIMAT_mirbasev20_miRNA_RPM.csv")
+
+head(RPM[,1:5])
+dim(RPM) #2576 1138
+```
+
+
+
+#read in the miRNA annotations
+
+```{r}
+mirAnno <- read.csv("/fh/fast/meshinchi_s/workingDir/TARGET/Reference_Data/miRBase_v21/hsa_gff3_IDMap.csv", 
+                    stringsAsFactors = FALSE)
+head(mirAnno)
+```
+
+
+
+#Melt MiR-130a  and Define Cohort
+
+```{r}
+mir130 <- RPM %>%
+  filter(grepl( "mir.130a",mir)) %>%
+  gather(TARGET.Barcode,RPM, -mir) %>%
+  filter(grepl("^BM|^RO|^P[A-Z]", TARGET.Barcode)) %>% #ensure only AML and NBM (no cell lines)
+  
+  mutate(log2.RPM=log2(RPM+1),
+         group=ifelse(grepl("^BM|^RO", TARGET.Barcode), "NBM", "AML"),
+         USI=str_split_fixed(TARGET.Barcode, "\\.", n=3)[,1], 
+         mimat=str_split_fixed(mir,"\\.", 2)[,2]) %>%
+  
+  left_join(., mirAnno, by=c("mimat"="MIMAT.ID")) %>%
+  left_join(., select(merged, USI,Protocol, ISCN,Primary.Cytogenetic.Code,
+                      Cytogenetic.Category.1, Cytogenetic.Category.2, Rare.Fusions,
+                      Overall.Survival.Time.in.Days, Event.Free.Survival.Time.in.Days,
+                      OS.ID,Event.ID), by="USI") %>%
+  
+  mutate_at(vars(Cytogenetic.Category.1),
+            funs(case_when(
+              group=="NBM" ~ "NBM",
+              #fix MLLs who are pos. by karyotype but classified as "other" in primary cytogenetic code.
+              USI %in% c("PAUUXA", "PAVGIX", "PAVNUJ", "PAVSFB", "PAVSLI") ~ "MLL",
+              
+              #fix one t(8,21) who was listed as normal due to a cryptic insersion.
+              grepl("cryp ins(21)(8;21)", ISCN, fixed = TRUE)  ~ "t.8.21.",  
+              
+              grepl("Other",.) ~ "OtherAML",
+              is.na(.) ~ "OtherAML", 
+              grepl("Unknown", .) ~ "OtherAML",
+              TRUE ~ .))) %>%
+  mutate(Cytogenetic.Category.1=factor(Cytogenetic.Category.1, levels=c("NBM" ,
+                                                                        "t.8.21.",
+                                                                        "inv.16.",
+                                                                        "MLL",
+                                                                        "Normal",
+                                                                        "OtherAML"))) %>%
+ mutate_at(vars(Cytogenetic.Category.2, 
+                 Rare.Fusions, 
+                 Protocol),
+            funs(case_when(
+              group=="NBM" ~ "NBM",
+              is.na(.) ~ "OtherAML", 
+              grepl("Unknown", .) ~ "OtherAML",
+              TRUE ~ .))) %>%
+
+  mutate(CBF.AML=case_when(
+    grepl("t.8.21.|inv.16.", Cytogenetic.Category.1) ~ "CBF.AML", 
+    grepl("NBM", Cytogenetic.Category.1) ~ "NBM",
+    TRUE ~ "OtherAML"))
+  
+
+# head(mir130)
+# dim(mir130) 2270   18
+```
+
+
+
+In the future, will create my ordering function. Need to reorder USI so that the factor levels order BM and AML seperately, and BM and AML ordered by increasing RPM. 
+
+```{r}
+# table(mir130$group[mir130$mir=="hsa-mir-130a.MIMAT0000425"], useNA = "always")
+# table(mir130$Protocol[mir130$mir=="hsa-mir-130a.MIMAT0000425"], useNA = "always")
+table(mir130$Cytogenetic.Category.1[mir130$mir=="hsa-mir-130a.MIMAT0000425"], useNA = "always")
+# table(mir130$Cytogenetic.Category.2[mir130$mir=="hsa-mir-130a.MIMAT0000425"], useNA = "always")
+table(mir130$Rare.Fusions[mir130$mir=="hsa-mir-130a.MIMAT0000425"], useNA = "always")
+table(mir130$CBF.AML[mir130$mir=="hsa-mir-130a.MIMAT0000425"], useNA = "always")
+```
+
+
+#Define Expression Groups (High vs Low)
+
+```{r}
+source("~/scripts/survival_analysis/Survplot_Functions_2018.10.24.r")
+```
+
+
+```{r}
+expn_groups <- function(numericVector,USI,type="median"){
+  
+  if (type == "median"){
+    m <- median(numericVector)
+    g <- ifelse(numericVector > m, "high", "low")
+    names(g) <- USI
+    
+  }else if (type=="quantile"){
+    q <- quantile(numericVector)
+    
+    #if first 2 quartiles are all zeros    
+    if(q[1]==q[2] & q[1]==q[3]){
+      #add USIs to the ordered numeric vector
+      numline <- numericVector %>% set_names(USI) %>% .[order(.)] #ordered from lowest to highest value
+      qts <- round(quantile(1:length(numline)), digits = 0)
+      
+      q1 <- numline[(1:qts[2]-1)] #identify USIs in q1
+      q2 <- numline[qts[2]:(qts[3]-1)] #identify USIs in q2
+      
+      #update the groups so that q1s are included
+      grp <- ifelse(numericVector < q[2], "q1", 
+                  ifelse(numericVector >= q[2] & numericVector < q[3], "q2", 
+                         ifelse(numericVector >= q[3] & numericVector < q[4], "q3", "q4"))) %>%
+        set_names(USI)
+      
+      g <- ifelse(names(grp) %in% names(q1), "NoExpn", grp)
+      g <- ifelse(names(grp) %in% names(q2), "NoExpn", g)
+      
+    } else if (q[1] == q[2]){ #if first quartiles are all zeros 
+      #add USIs to the ordered numeric vector
+      numline <- numericVector %>% set_names(USI) %>% .[order(.)] #ordered from lowest to highest value
+      qts <- quantile(1:length(numline))
+      q1 <- numline[1:qts[2]-1] #identify USIs in q1
+      
+      #update the groups so that q1s are included
+      g <- ifelse(numericVector < q[2], "q1", 
+                  ifelse(numericVector >= q[2] & numericVector < q[3], "q2", 
+                         ifelse(numericVector >= q[3] & numericVector < q[4], "q3", "q4"))) %>%
+        set_names(USI)
+      
+      g <- ifelse(names(g) %in% names(q1), "NoExpn", g)
+      
+      
+    }else{
+     g <- ifelse(numericVector < q[2], "q1",
+                 ifelse(numericVector >= q[2] & numericVector < q[3], "q2", 
+                        ifelse(numericVector >= q[3] & numericVector < q[4], "q3", "q4"))) 
+    }
+  }
+  
+  return(g)
+}
+```
+
+```{r}
+mir130.expn <- mir130 %>%
+  group_by(miR,Cytogenetic.Category.1) %>%
+  
+  mutate(High.Low.Median=expn_groups(log2.RPM,USI),
+         High.Low.Quartile=expn_groups(log2.RPM,USI, type="quantile")) %>%
+  
+  mutate(High.25Per=ifelse(High.Low.Quartile=="q4", "q4", "q123"))
+
+
+# head(mir130.expn)
+# dim(mir130.expn)
+```
+
+```{r}
+cbf.mirExpn <- mir130 %>%
+  filter(grepl("CBF", CBF.AML )) %>%
+  group_by(miR) %>%
+  
+  mutate(High.Low.Median=expn_groups(log2.RPM,USI),
+         High.Low.Quartile=expn_groups(log2.RPM,USI, type="quantile")) %>%
+   mutate(High.25Per=ifelse(High.Low.Quartile=="q4", "q4", "q123"))
+
+
+# head(cbf.mirExpn)
+# dim(cbf.mirExpn) #502
+
+# write.csv(cbf.mirExpn,"TARGET_AML_1031_miR130a_Expression.csv")
+```
+
+
+#Boxplots of Expression
+
+```{r fig.width=8, fig.height=5}
+# png("TARGET_AML_1031_mir130a_Expn_Barplots_12.11.18.png", height = 5, width = 8, units="in", res=200)
+ggplot(mir130.expn, aes(y=log2.RPM, x=Cytogenetic.Category.1, fill=Cytogenetic.Category.1)) +
+  geom_boxplot() +
+  # geom_histogram(binwidth = 0.1) +
+  facet_wrap(~ miR,scales = "fixed", ncol = 2) +
+  theme_bw() + 
+  theme(strip.background = element_blank(),
+        strip.text = element_text(size=16), 
+        axis.title = element_text(size=20),
+        axis.text = element_text(size=20, color="black"), 
+        axis.text.x = element_text(angle = 45, hjust=1, vjust=1, color="black"))
+
+# dev.off()
+```
+
+```{r fig.height=4, fig.width=5}
+p1 <-  ggplot(cbf.mirExpn, aes(x=Cytogenetic.Category.1, y=log2.RPM, fill=Cytogenetic.Category.1))+
+  geom_boxplot() +
+  labs(title="Both miR-130a Species") +
+  theme_bw()
+
+p2 <- ggplot(cbf.mirExpn, aes(x=Cytogenetic.Category.1, y=log2.RPM, fill=Cytogenetic.Category.1))+
+  geom_boxplot() +
+  facet_wrap(~ miR) +
+  theme_bw() +
+  theme(strip.background = element_blank()) 
+
+grid.arrange(p1,p2)
+```
+
+
+
+
+
+#Survival Analysis in Cytogenetic Groups
+
+```{r}
+mir130.expn.AML <- filter(mir130.expn, Cytogenetic.Category.1 != "NBM") %>%
+  droplevels(.)
+```
+
+```{r}
+mir130.expn.AML %>%
+  group_by(mir) %>%
+  summarise(N.Surv.Dat=sum(!is.na(Overall.Survival.Time.in.Days)))
+```
+
+##Continous Variable
+
+```{r}
+library(survival)
+```
+
+```{r}
+df <- mir130.expn.AML %>%
+  group_by(miR, Cytogenetic.Category.1) %>%
+  do(KM = survival::Surv(time = .$Overall.Survival.Time.in.Days, event = .$OS.ID), 
+     coxMod = coxph(Surv(time = .$Overall.Survival.Time.in.Days, event = .$OS.ID) ~ .$log2.RPM),
+     coxPHtest = cox.zph(coxph(Surv(time = .$Overall.Survival.Time.in.Days, event = .$OS.ID) ~ .$log2.RPM),
+                         transform = "km")) %>%
+  arrange(Cytogenetic.Category.1)
+
+df
+```
+
+```{r}
+names(df$coxMod) <- paste0(df$miR, " in ", df$Cytogenetic.Category.1)
+lapply(df$coxMod, summary)
+```
+
+
+
+
+##Median Groups 
+
+```{r}
+expnGroups <-  KM.plots(mir130.expn.AML,
+                   "miR", "Cytogenetic.Category.1", #grouping variables
+                   type="OS",
+                   covariate = "High.Low.Median",
+                   cohort = "0531", 
+                   riskTable = FALSE,
+                   cc = c("low"="blue", "high"="red")) %>%
+  arrange(Cytogenetic.Category.1)
+
+expnGroups
+```
+
+```{r fig.height=20, fig.width=11}
+# png("TARGET_AML_1031_miR.130a_OS_by_Cyto.png", height = 20, width=11,units = "in", res=200)
+grid.arrange(grobs = expnGroups$OS, ncol=2, nrow=5)
+# dev.off()
+```
+
+
+```{r fig.height=20, fig.width=11}
+ # png("TARGET_AML_1031_miR.130a_EFS_by_Cyto.png", height = 20, width=11,units = "in", res=200)
+grid.arrange(grobs = expnGroups$EFS, ncol=2, nrow=5)
+# dev.off()
+```
+
+```{r}
+cbf.expnGroups <- KM.plots(cbf.mirExpn,
+                    "miR", #grouping varaibles
+                   type="OS",
+                   covariate = "High.Low.Median",
+                   cohort = "0531", 
+                   riskTable = FALSE,
+                   cc = c("low"="blue", "high"="red")) 
+cbf.expnGroups
+```
+
+```{r fig.height=8, fig.width=6}
+# png("TARGET_AML_1031_miR.130a_OS_in_CBF-AML.png", height =8, width=6,units = "in", res=200)
+grid.arrange(grobs = cbf.expnGroups$OS, nrow=2)
+# dev.off()
+```
+
+```{r fig.height=8, fig.width=6}
+# png("TARGET_AML_1031_miR.130a_EFS_in_CBF-AML.png", height =8, width=6,units = "in", res=200)
+grid.arrange(grobs = cbf.expnGroups$EFS,  nrow=2)
+# dev.off()
+```
+
+
+##by quartile groups
+
+c("q1"="blue", "q2"="dodgerblue", "q3"="red1","q4"="red4","NoExpn"="darkgrey")
+
+```{r}
+expnGroups.qt <-  KM.plots(mir130.expn.AML,
+                   "miR", "Cytogenetic.Category.1", #grouping variables
+                   type="OS",
+                   covariate = "High.Low.Quartile",
+                   cohort = "0531", 
+                   riskTable = FALSE,
+                   cc = NULL) %>%
+  arrange(Cytogenetic.Category.1)
+
+expnGroups.qt
+```
+
+
+```{r fig.height=20, fig.width=11}
+# png("TARGET_AML_1031_miR.130a_OS_by_Cyto_quartiles.png", height = 20, width=11,units = "in", res=200)
+grid.arrange(grobs = expnGroups.qt$OS, ncol=2, nrow=5)
+# dev.off()
+```
+
+
+```{r fig.height=20, fig.width=11}
+ # png("TARGET_AML_1031_miR.130a_EFS_by_Cyto_quartiles.png", height = 20, width=11,units = "in", res=200)
+grid.arrange(grobs = expnGroups.qt$EFS, ncol=2, nrow=5)
+# dev.off()
+```
+
+```{r}
+cbf.expnGroups.qt <- KM.plots(cbf.mirExpn, 
+                    "miR", "CBF.AML", #grouping varaibles
+                   type="OS",
+                   covariate = "High.Low.Quartile",
+                   cohort = "0531", 
+                   riskTable = FALSE,
+                   cc = NULL) %>%
+  arrange(CBF.AML)
+
+cbf.expnGroups.qt
+```
+
+```{r fig.height=8, fig.width=11}
+# png("TARGET_AML_1031_miR.130a_OS_in_CBF-AML_quartiles.png", height =8, width=11,units = "in", res=200)
+grid.arrange(grobs = cbf.expnGroups.qt$OS, ncol=2, nrow=2)
+# dev.off()
+```
+
+```{r fig.height=8, fig.width=11}
+# png("TARGET_AML_1031_miR.130a_EFS_in_CBF-AML_quartiles.png", height =8, width=11,units = "in", res=200)
+grid.arrange(grobs = cbf.expnGroups.qt$EFS, ncol=2, nrow=2)
+# dev.off()
+```
+
+
+##by 4th Quartile vs All Others groups
+
+c("q1"="blue", "q2"="dodgerblue", "q3"="red1","q4"="red4","NoExpn"="darkgrey")
+
+```{r}
+expnGroups.25 <-  KM.plots(mir130.expn.AML,
+                   "miR", "Cytogenetic.Category.1", #grouping variables
+                   type="OS",
+                   covariate = "High.25Per",
+                   cohort = "0531", 
+                   riskTable = FALSE,
+                   cc = NULL) %>%
+  arrange(Cytogenetic.Category.1)
+
+expnGroups.25
+```
+
+
+```{r fig.height=20, fig.width=11}
+# png("TARGET_AML_1031_miR.130a_OS_by_Cyto_quartiles.png", height = 20, width=11,units = "in", res=200)
+grid.arrange(grobs = expnGroups.25$OS, ncol=2, nrow=5)
+# dev.off()
+```
+
+```{r fig.height=20, fig.width=11}
+ # png("TARGET_AML_1031_miR.130a_EFS_by_Cyto.png", height = 20, width=11,units = "in", res=200)
+grid.arrange(grobs = expnGroups.25$EFS, ncol=2, nrow=5)
+# dev.off()
+```
+
+```{r}
+cbf.expnGroups.25 <- KM.plots(cbf.mirExpn, 
+                    "miR", "CBF.AML", #grouping varaibles
+                   type="OS",
+                   covariate = "High.25Per",
+                   cohort = "0531", 
+                   riskTable = FALSE,
+                   cc = NULL) %>%
+  arrange(CBF.AML)
+
+cbf.expnGroups.25
+```
+
+```{r fig.height=8, fig.width=11}
+# png("TARGET_AML_1031_miR.130a_OS_in_CBF-AML_quartiles.png", height =8, width=11,units = "in", res=200)
+grid.arrange(grobs = cbf.expnGroups.25$OS, ncol=2, nrow=2)
+# dev.off()
+```
+
+```{r fig.height=8, fig.width=11}
+# png("TARGET_AML_1031_miR.130a_EFS_in_CBF-AML_quartiles.png", height =8, width=11,units = "in", res=200)
+grid.arrange(grobs = cbf.expnGroups.25$EFS, ncol=2, nrow=2)
+# dev.off()
+```
+
+
+
+#Session Information 
+
+```{r}
+sessionInfo()
+```
+
